@@ -1,0 +1,483 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Test and publish the OKDP Helm charts of a chart repository
+# (platform-packages, community-packages, sandbox-dependencies).
+#
+# Drop-in replacement for the KuboCD package template those repositories
+# carried: same publish_to_registry / registry / ci_registry /
+# oci_package_prefix / on_existing_tag / package_paths / runs-on inputs.
+#
+#   CI      (publish_to_registry: "false"): the charts changed by the push or
+#           pull request, pushed to oci://<ci_registry>/<owner>/<repo>/charts
+#           under a unique 0.0.0-ci.<branch>.g<sha> version.
+#   Release (publish_to_registry: "true"): the charts in package_paths (every
+#           chart when empty), pushed to
+#           oci://<registry>/<owner>/<oci_package_prefix> under their
+#           Chart.yaml version. A published version is never overwritten.
+#
+# See the README for the full input reference.
+
+name: okdp chart ci
+
+on:
+  workflow_call:
+    inputs:
+      publish_to_registry:
+        description: >-
+          "false": CI run, push to the CI registry. "true": release, push to
+          the release registry.
+        required: false
+        type: string
+        default: "false"
+      registry:
+        description: Release registry
+        required: false
+        type: string
+        default: "quay.io"
+      ci_registry:
+        description: CI registry
+        required: false
+        type: string
+        default: "ghcr.io"
+      oci_package_prefix:
+        description: >-
+          Release repository under the registry owner, e.g. platform-charts
+          for oci://quay.io/okdp/platform-charts. Required when publishing.
+        required: false
+        type: string
+        default: ""
+      on_existing_tag:
+        description: >-
+          Release only: "skip" leaves an already published chart version
+          alone and publishes the rest, "fail" stops the job.
+        required: false
+        type: string
+        default: "skip"
+      package_paths:
+        description: >-
+          JSON array of chart directories to process, as emitted by
+          release-please's paths_released output. Empty or "[]": the changed
+          charts (CI) or every chart (release).
+        required: false
+        type: string
+        default: ""
+      all_charts:
+        description: Process every chart, not only the changed ones
+        required: false
+        type: boolean
+        default: false
+      chart_roots:
+        description: Space separated directories holding the charts
+        required: false
+        type: string
+        default: "packages charts"
+      descriptor_optional:
+        description: >-
+          Comma or space separated chart names (or directories) of helper
+          charts that render no okdp.descriptor. Library charts are exempt
+          on their own.
+        required: false
+        type: string
+        default: ""
+      base_values:
+        description: >-
+          Space separated values files layered before each ci/*-values.yaml,
+          e.g. a platform-values fixture providing global.okdp
+        required: false
+        type: string
+        default: ""
+      kubernetes_version:
+        description: Kubernetes version for helm template and kubeconform
+        required: false
+        type: string
+        default: "1.31.0"
+      kubeconform_strict:
+        description: Run kubeconform with -strict (reject unknown fields)
+        required: false
+        type: boolean
+        default: false
+      push:
+        description: >-
+          Push the charts. false validates only (e.g. pull requests from
+          forks, whose token cannot write packages).
+        required: false
+        type: boolean
+        default: true
+      sibling_repositories:
+        description: >-
+          Space separated owner/repo@ref cloned next to the checkout (as
+          ../<repo>), for file:// dependencies on another repository during
+          the migration, e.g. "OKDP/platform-packages@no-kubocd"
+        required: false
+        type: string
+        default: ""
+      helm_version:
+        description: Helm version
+        required: false
+        type: string
+        default: "v3.21.4"
+      tools_repository:
+        description: Repository holding the okdp-chart-* scripts
+        required: false
+        type: string
+        default: "OKDP/gh-workflows"
+      tools_ref:
+        description: >-
+          Ref of tools_repository to take the scripts from. Keep it on the
+          ref this workflow is called at.
+        required: false
+        type: string
+        default: "v1"
+      runs-on:
+        description: GitHub Actions runner
+        required: false
+        type: string
+        default: "ubuntu-latest"
+    secrets:
+      REGISTRY_USERNAME:
+        description: Release registry user (release only)
+        required: false
+      REGISTRY_ROBOT_TOKEN:
+        description: Release registry token (release only)
+        required: false
+    outputs:
+      charts:
+        description: Space separated chart directories processed
+        value: ${{ jobs.charts.outputs.charts }}
+      version:
+        description: CI version the charts were pushed under (CI only)
+        value: ${{ jobs.charts.outputs.version }}
+      repository:
+        description: OCI repository the charts were pushed to (oci://...)
+        value: ${{ jobs.charts.outputs.repository }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  KUBECONFORM_VERSION: v0.8.0
+  ORAS_VERSION: 1.3.4
+  CHECK_JSONSCHEMA_VERSION: 0.38.2
+  TOOLS: .okdp-gh-workflows
+
+jobs:
+
+  charts:
+    name: charts (${{ inputs.publish_to_registry == 'true' && 'release' || 'ci' }})
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      charts: ${{ steps.select.outputs.charts }}
+      version: ${{ steps.version.outputs.version }}
+      repository: ${{ steps.target.outputs.repository }}
+    steps:
+
+      - name: Checkout Repo ⚡️
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout the chart CI scripts (${{ inputs.tools_repository }}@${{ inputs.tools_ref }}) ⚡️
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ inputs.tools_repository }}
+          ref: ${{ inputs.tools_ref }}
+          path: ${{ env.TOOLS }}
+          persist-credentials: false
+
+      - name: Clone sibling repositories ⚡️
+        if: inputs.sibling_repositories != ''
+        env:
+          SIBLINGS: ${{ inputs.sibling_repositories }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          for s in ${SIBLINGS}; do
+            repo="${s%@*}"; ref="${s#*@}"
+            [[ "${ref}" == "${s}" ]] && ref=""
+            dest="$(dirname "${GITHUB_WORKSPACE}")/${repo#*/}"
+            echo "${repo}${ref:+@${ref}} -> ${dest}"
+            git clone -q --depth 1 ${ref:+--branch "${ref}"} "${SERVER}/${repo}.git" "${dest}"
+          done
+
+      - name: Setup helm 📦
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ inputs.helm_version }}
+
+      - name: Install kubeconform, oras, check-jsonschema 📦
+        run: |
+          set -euo pipefail
+          bin="${RUNNER_TEMP}/bin"; mkdir -p "${bin}"
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C "${bin}" kubeconform
+          curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "${bin}" oras
+          pipx install --quiet "check-jsonschema==${CHECK_JSONSCHEMA_VERSION}"
+          echo "${bin}" >> "$GITHUB_PATH"
+          "${bin}/kubeconform" -v; "${bin}/oras" version | head -1; yq --version; jq --version
+
+      - name: Select the charts 🔎
+        id: select
+        env:
+          RELEASE: ${{ inputs.publish_to_registry }}
+          PACKAGE_PATHS: ${{ inputs.package_paths }}
+          ALL: ${{ inputs.all_charts }}
+          ROOTS: ${{ inputs.chart_roots }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          args=(--roots "${ROOTS}")
+          if [[ -n "${PACKAGE_PATHS}" && "${PACKAGE_PATHS}" != "[]" ]]; then
+            args+=(--paths "${PACKAGE_PATHS}")
+          elif [[ "${RELEASE}" == "true" || "${ALL}" == "true" ]]; then
+            args+=(--all)
+          elif [[ -n "${PR_BASE}" ]]; then
+            args+=(--base "${PR_BASE}")
+          elif [[ -n "${PUSH_BEFORE}" ]]; then
+            args+=(--base "${PUSH_BEFORE}")
+          else
+            args+=(--all)
+          fi
+          echo "okdp-chart-list.sh ${args[*]}"
+          CHARTS=$(bash "${TOOLS}/scripts/okdp-chart-list.sh" "${args[@]}" | tr '\n' ' ')
+          CHARTS="${CHARTS% }"
+          echo "Charts: ${CHARTS:-<none>}"
+          echo "charts=${CHARTS}" >> "$GITHUB_OUTPUT"
+          echo "CHARTS=${CHARTS}" >> "$GITHUB_ENV"
+
+      - name: No chart to process ✅
+        if: env.CHARTS == ''
+        run: echo "No chart changed. Nothing to do."
+
+      - name: Guard the OKDP chart rules 🛡️
+        id: guard
+        if: env.CHARTS != ''
+        env:
+          DESCRIPTOR_OPTIONAL: ${{ inputs.descriptor_optional }}
+        run: |
+          # shellcheck disable=SC2086 # CHARTS is a word list
+          bash "${TOOLS}/scripts/okdp-chart-guard.sh" --descriptor-optional "${DESCRIPTOR_OPTIONAL}" ${CHARTS}
+
+      - name: Validate values.schema.json against the draft-07 meta-schema 🛡️
+        id: schema
+        if: always() && env.CHARTS != '' && steps.select.outcome == 'success'
+        run: |
+          set -uo pipefail
+          schemas=()
+          for chart in ${CHARTS}; do
+            [[ -f "${chart}/values.schema.json" ]] && schemas+=("${chart}/values.schema.json")
+          done
+          if [[ ${#schemas[@]} -eq 0 ]]; then
+            echo "No values.schema.json to check."
+            exit 0
+          fi
+          check-jsonschema --check-metaschema "${schemas[@]}"
+
+      - name: Build, lint, render and kubeconform 🧪
+        id: test
+        if: always() && env.CHARTS != '' && steps.select.outcome == 'success'
+        env:
+          BASE_VALUES: ${{ inputs.base_values }}
+          KUBE_VERSION: ${{ inputs.kubernetes_version }}
+          STRICT: ${{ inputs.kubeconform_strict }}
+        run: |
+          args=(--base-values "${BASE_VALUES}" --kube-version "${KUBE_VERSION}" --out "${RUNNER_TEMP}/rendered")
+          [[ "${STRICT}" == "true" ]] && args+=(--strict)
+          # shellcheck disable=SC2086 # CHARTS is a word list
+          bash "${TOOLS}/scripts/okdp-chart-test.sh" "${args[@]}" ${CHARTS}
+
+      # ----------------------------------------------------------------------
+      # Publication. Every step below runs only when all the checks passed.
+      # ----------------------------------------------------------------------
+
+      - name: Set the target repository 📦
+        id: target
+        if: env.CHARTS != '' && inputs.push
+        env:
+          RELEASE: ${{ inputs.publish_to_registry }}
+          REGISTRY: ${{ inputs.registry }}
+          CI_REGISTRY: ${{ inputs.ci_registry }}
+          PREFIX: ${{ inputs.oci_package_prefix }}
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE}" == "true" ]]; then
+            if [[ -z "${PREFIX}" ]]; then
+              echo "::error title=No release repository::set oci_package_prefix (e.g. platform-charts) to publish"
+              exit 1
+            fi
+            target="${REGISTRY}/${GITHUB_REPOSITORY_OWNER@L}/${PREFIX}"
+            host="${REGISTRY}"
+          else
+            target="${CI_REGISTRY}/${GITHUB_REPOSITORY@L}/charts"
+            host="${CI_REGISTRY}"
+          fi
+          echo "Target: oci://${target}"
+          echo "TARGET=${target}" >> "$GITHUB_ENV"
+          echo "HOST=${host}" >> "$GITHUB_ENV"
+          echo "repository=oci://${target}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to the CI registry (${{ inputs.ci_registry }}) 🔐
+        if: env.CHARTS != '' && inputs.push && inputs.publish_to_registry != 'true'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ inputs.ci_registry }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Login to the release registry (${{ inputs.registry }}) 🔐
+        if: env.CHARTS != '' && inputs.push && inputs.publish_to_registry == 'true'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_ROBOT_TOKEN }}
+
+      # The CI registry is a scratch area. Every run would otherwise push the
+      # same Chart.yaml version over the last one, from any branch. Stamp a
+      # unique, obviously non-releasable version instead, so a specific build
+      # can be pinned and cannot change under whoever pinned it. The release
+      # path never runs this step.
+      - name: Compute the CI version 🏷️
+        id: version
+        if: env.CHARTS != '' && inputs.push && inputs.publish_to_registry != 'true'
+        env:
+          # The head branch for a pull request, not the <n>/merge ref.
+          REF_NAME: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # SemVer pre-release identifiers allow only letters, digits and
+          # hyphens, so "chore/release-please" has to be flattened. Truncated
+          # to keep the tag well inside the 128-character OCI limit.
+          SLUG=$(echo "${REF_NAME}" \
+                 | tr -c 'a-zA-Z0-9-' '-' \
+                 | sed 's/-\{2,\}/-/g;s/^-//;s/-$//' \
+                 | cut -c1-30 | sed 's/-$//')
+          # The "g" is git-describe convention, and it also guarantees the
+          # identifier is never all-digits (a leading-zero numeric identifier
+          # is invalid SemVer).
+          VERSION="0.0.0-ci.${SLUG}.g${GITHUB_SHA::7}"
+          echo "CI version: ${VERSION}"
+          echo "::notice title=CI chart version::${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "CI_VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      # release-please owns the OKDP half of the version (the manifest), the
+      # repository's compose step joins it to the upstream half in Chart.yaml.
+      # Refuse to publish a Chart.yaml that disagrees with the manifest.
+      - name: Check Chart.yaml versions against release-please 🔒
+        if: env.CHARTS != '' && inputs.push && inputs.publish_to_registry == 'true'
+        run: |
+          set -uo pipefail
+          [[ -f .release-please-manifest.json ]] || { echo "No .release-please-manifest.json"; exit 0; }
+          rc=0
+          for chart in ${CHARTS}; do
+            okdp=$(jq -r --arg p "${chart}" '.[$p] // ""' .release-please-manifest.json)
+            [[ -n "${okdp}" ]] || continue
+            version=$(yq -r '.version' "${chart}/Chart.yaml")
+            if [[ "${version}" == "${okdp}" || "${version}" == *"-${okdp}" ]]; then
+              echo "${chart}: ${version} ✓"
+            else
+              echo "::error file=${chart}/Chart.yaml,title=Version not composed::version ${version} does not end with the release-please version ${okdp}"
+              rc=1
+            fi
+          done
+          exit "${rc}"
+
+      # A published version is immutable: the same reference must always
+      # resolve to the same artifact. Only the release registry is: the CI
+      # registry must always accept a new build.
+      - name: Drop charts already published under their version 🔒
+        if: env.CHARTS != '' && inputs.push && inputs.publish_to_registry == 'true'
+        env:
+          ON_EXISTING_TAG: ${{ inputs.on_existing_tag }}
+        run: |
+          set -uo pipefail
+          KEEP=""
+          SKIPPED=""
+          for chart in ${CHARTS}; do
+            name=$(yq -r '.name' "${chart}/Chart.yaml")
+            version=$(yq -r '.version' "${chart}/Chart.yaml")
+            ref="${TARGET}/${name}:${version}"
+            rc=0
+            out=$(oras manifest fetch --descriptor "${ref}" 2>&1) || rc=$?
+            if [[ ${rc} -eq 0 ]]; then
+              echo "::notice title=Already published::${ref} exists, skipping ${chart}"
+              SKIPPED="${SKIPPED} ${name}:${version}"
+            elif grep -qiE 'not found|404|name unknown' <<<"${out}"; then
+              echo "${ref} is free ✓"
+              KEEP="${KEEP} ${chart}"
+            else
+              echo "::error title=Cannot determine tag state::${ref}: ${out}"
+              exit 1
+            fi
+          done
+
+          if [[ -n "${SKIPPED}" && "${ON_EXISTING_TAG}" == "fail" ]]; then
+            echo "::error title=Version already published::${SKIPPED# } already exist(s) on ${HOST}. Bump the chart version."
+            exit 1
+          fi
+
+          echo "CHARTS=${KEEP# }" >> "$GITHUB_ENV"
+          {
+            echo "### Chart publication plan"
+            echo ""
+            echo "| Chart | Action |"
+            echo "| --- | --- |"
+            for s in ${SKIPPED}; do echo "| \`${s}\` | skipped, already published |"; done
+            for c in ${KEEP};    do echo "| \`${c}\` | package and push |"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package and push the charts to oci://${{ env.TARGET }} 📤
+        if: env.CHARTS != '' && inputs.push
+        run: |
+          set -uo pipefail
+          dest="${RUNNER_TEMP}/packages"
+          mkdir -p "${dest}"
+          FAILED=""
+          for chart in ${CHARTS}; do
+            echo "::group::${chart}"
+            rm -f "${dest}"/*.tgz
+            # Dependencies were built by the test step, on this same checkout.
+            if helm package "${chart}" --destination "${dest}" ${CI_VERSION:+--version "${CI_VERSION}"} \
+               && helm push "${dest}"/*.tgz "oci://${TARGET}"; then
+              echo "| \`${chart}\` | \`oci://${TARGET}/$(yq -r '.name' "${chart}/Chart.yaml")\` | \`${CI_VERSION:-$(yq -r '.version' "${chart}/Chart.yaml")}\` |" >> "${RUNNER_TEMP}/pushed.md"
+            else
+              FAILED="${FAILED} ${chart}"
+            fi
+            echo "::endgroup::"
+          done
+          if [[ -f "${RUNNER_TEMP}/pushed.md" ]]; then
+            {
+              echo "### Charts pushed"
+              echo ""
+              echo "| Chart | Repository | Version |"
+              echo "| --- | --- | --- |"
+              cat "${RUNNER_TEMP}/pushed.md"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ -n "${FAILED}" ]]; then
+            echo "::error title=Chart push failed::${FAILED# }"
+            exit 1
+          fi
