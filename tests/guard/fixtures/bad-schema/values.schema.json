@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "global": {"type": "object"},
+    "hive": {"type": "string", "title": "Storage | Hive | select", "x-kubocd-connection-ref": {"contract": "hive"}}
+  }
+}

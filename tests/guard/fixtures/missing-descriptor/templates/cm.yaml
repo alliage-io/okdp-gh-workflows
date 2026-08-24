@@ -1,0 +1,5 @@
+{{- /* include "okdp.descriptor" . in a comment does not count */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-x

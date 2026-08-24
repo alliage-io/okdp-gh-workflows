@@ -1,0 +1,8 @@
+{{- if .Release.IsInstall }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-x
+data:
+  upgrade: {{ $.Release.IsUpgrade | quote }}
+{{- end }}

@@ -1,0 +1,4 @@
+apiVersion: v2
+name: bad-library
+version: 1.0.0
+type: library
