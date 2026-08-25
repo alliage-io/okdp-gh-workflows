@@ -32,6 +32,9 @@
 #   - at least one ci/*-values.yaml
 #
 # Library charts (`type: library`) only get the forbidden-pattern checks.
+# Helper charts listed in --descriptor-optional are tested through their
+# parent chart: they need no descriptor, no ci values, and their schema, if
+# any, need not declare global/connections, but it must still be draft-07.
 # Only the chart's own templates/ are scanned: vendored upstream subcharts
 # (charts/*.tgz) are not OKDP code.
 #
@@ -39,7 +42,8 @@
 #   okdp-chart-guard.sh [--descriptor-optional NAMES] <chart-dir>...
 #
 #   NAMES   comma or space separated chart names (Chart.yaml `name`) or chart
-#           directories that are helper charts and render no descriptor.
+#           directories that are helper (sub)charts: no descriptor, no ci
+#           values, no root global/connections required.
 #
 # Exit status: 0 when every chart passes, 1 when any check fails, 2 on usage error.
 # Inside GitHub Actions, findings are emitted as ::error/::warning annotations.
@@ -153,8 +157,8 @@ has_descriptor() {  # has_descriptor <chart dir>: a template includes okdp.descr
   [[ -n "$found" ]]
 }
 
-check_schema() {   # check_schema <chart dir>
-  local chart="$1" schema="$1/values.schema.json" s
+check_schema() {   # check_schema <chart dir> [helper]
+  local chart="$1" schema="$1/values.schema.json" s helper="${2:-}"
   if [[ ! -f "$schema" ]]; then
     report error "$schema" "" "missing values.schema.json (JSON Schema draft-07)"
     return
@@ -168,7 +172,7 @@ check_schema() {   # check_schema <chart dir>
     report error "$schema" "" "\$schema must be http://json-schema.org/draft-07/schema# (found '${s:-none}')"
   fi
   local key
-  for key in global connections; do
+  [[ -n "$helper" ]] || for key in global connections; do
     if [[ $(jq --arg k "$key" '(.properties // {}) | has($k)' "$schema") != "true" ]]; then
       report error "$schema" "" "root properties must declare '$key' (do not rely on additionalProperties)"
     fi
@@ -206,8 +210,15 @@ guard_chart() {    # guard_chart <chart dir>
 
   [[ "$type" == "library" ]] && return
 
-  if ! in_list "$name" "$DESCRIPTOR_OPTIONAL" && ! in_list "$chart" "$DESCRIPTOR_OPTIONAL" \
-     && ! has_descriptor "$chart"; then
+  # Helper (sub)charts are tested through their parent chart: no descriptor,
+  # no root global/connections, no ci values of their own. A schema they
+  # ship must still be draft-07.
+  if in_list "$name" "$DESCRIPTOR_OPTIONAL" || in_list "$chart" "$DESCRIPTOR_OPTIONAL"; then
+    [[ -f "$chart/values.schema.json" ]] && check_schema "$chart" helper
+    return
+  fi
+
+  if ! has_descriptor "$chart"; then
     report error "$chartfile" "" "service chart '$name' does not render the instance descriptor: add {{ include \"okdp.descriptor\" . }} (or list it in descriptor-optional if it is a helper chart)"
   fi
 

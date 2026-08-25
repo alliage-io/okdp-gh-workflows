@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-helper-bad
+data:
+  clientId: {{ .Values.clientId | quote }}
+  secret: {{ randAlphaNum 32 | quote }}

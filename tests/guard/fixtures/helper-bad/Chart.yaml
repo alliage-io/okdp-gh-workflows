@@ -1,0 +1,4 @@
+apiVersion: v2
+name: helper-bad
+version: 1.0.0
+appVersion: "1.0.0"

@@ -63,7 +63,7 @@ a `Chart.yaml` version that does not end with the release-please version of its 
 | `package_paths` | `""` | JSON array of chart directories (release-please `paths_released`). Empty or `[]`: changed charts (CI) or every chart (release). |
 | `all_charts` | `false` | Process every chart, not only the changed ones. |
 | `chart_roots` | `packages charts` | Directories searched for charts (`Chart.yaml`, nested charts excluded). |
-| `descriptor_optional` | `""` | Helper charts (names or directories, comma or space separated) that render no `okdp.descriptor`. Library charts are exempt on their own. |
+| `descriptor_optional` | `""` | Helper (sub)charts (names or directories, comma or space separated), tested through their parent chart: no `okdp.descriptor`, no `ci/*-values.yaml`, no root `global`/`connections` required (a `values.schema.json` they ship must still be draft-07). Library charts are exempt on their own. |
 | `base_values` | `""` | Values files layered before each `ci/*-values.yaml`, e.g. a platform-values fixture providing `global.okdp`. |
 | `kubernetes_version` | `1.31.0` | `helm template --kube-version` and `kubeconform -kubernetes-version`. |
 | `kubeconform_strict` | `false` | `kubeconform -strict` (reject unknown fields). |
@@ -159,6 +159,12 @@ For application charts, it also requires:
   root `properties`, and no `x-kubocd-*` keyword left (a KuboCD title DSL `A | B | C` is a
   warning);
 - at least one `ci/*-values.yaml`.
+
+Helper (sub)charts listed in `descriptor_optional` (`--descriptor-optional`) are tested
+through their parent chart: they need no descriptor, no `ci/*-values.yaml`, and no root
+`global`/`connections`. A `values.schema.json` they ship must still be draft-07 (and free of
+`x-kubocd-*`), and the forbidden-pattern checks apply to them as to every chart. Without
+`ci/`, `okdp-chart-test.sh` renders a helper chart with its default values.
 
 ## Running the checks locally
 

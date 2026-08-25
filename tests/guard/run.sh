@@ -98,6 +98,23 @@ expect missing-descriptor 0 "--descriptor-optional other,missing-descriptor"
 expect missing-descriptor 0 "--descriptor-optional=missing-descriptor/"
 expect missing-descriptor 0 "--descriptor-optional missing-descriptor"
 
+# Helper (sub)charts listed in --descriptor-optional: tested through their parent,
+# so no descriptor, no ci values, no root global/connections. Without the opt-out
+# the same chart fails.
+expect helper-chart 0 "--descriptor-optional helper-chart"
+expect helper-no-schema 0 "--descriptor-optional helper-no-schema"
+expect helper-chart 1 "" \
+  "helper-chart/Chart.yaml: error: service chart 'helper-chart' does not render the instance descriptor" \
+  "helper-chart/values.schema.json: error: root properties must declare 'global'" \
+  "helper-chart/values.schema.json: error: root properties must declare 'connections'" \
+  "helper-chart: error: no ci/*-values.yaml test values file"
+expect helper-no-schema 1 "" \
+  "helper-no-schema/values.schema.json: error: missing values.schema.json"
+# ...but a schema it ships must be draft-07, and the forbidden patterns still apply.
+expect helper-bad 1 "--descriptor-optional helper-bad" \
+  "helper-bad/templates/cm.yaml:7: error: non-deterministic function randAlphaNum is forbidden" \
+  "helper-bad/values.schema.json: error: \$schema must be http://json-schema.org/draft-07/schema#"
+
 expect bad-schema 1 "" \
   "bad-schema/values.schema.json: error: \$schema must be http://json-schema.org/draft-07/schema#" \
   "bad-schema/values.schema.json: error: root properties must declare 'connections'" \
