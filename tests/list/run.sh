@@ -21,6 +21,7 @@
 #   charts/helper                        depends on okdp-lib (file://)
 #   packages/services/a                  depends on helper (file://), so on okdp-lib too
 #   packages/services/b                  no local dependency, vendored subchart in charts/
+#   packages/services/c                  upstream chart vendored under vendor/ (okdp.vendor.render)
 #
 # Usage: tests/list/run.sh
 
@@ -46,6 +47,8 @@ chart charts/helper ../okdp-lib
 chart packages/services/a ../../../charts/helper
 chart packages/services/b
 chart packages/services/b/charts/vendored
+chart packages/services/c
+chart packages/services/c/vendor/upstream
 mkdir -p .github/workflows && touch .github/workflows/ci.yml README.md
 git add -A && git commit -qm base
 BASE=$(git rev-parse HEAD)
@@ -65,14 +68,14 @@ check() {  # check <name> <expected, space separated> <args>...
   fi
 }
 
-ALL_CHARTS="charts/helper charts/okdp-lib packages/services/a packages/services/b"
+ALL_CHARTS="charts/helper charts/okdp-lib packages/services/a packages/services/b packages/services/c"
 
 check "no argument: every chart"      "${ALL_CHARTS}"
 check "--all"                         "${ALL_CHARTS}" --all --base "${BASE}"
 check "empty paths: every chart"      "${ALL_CHARTS}" --paths "[]"
 check "zero base (new branch)"        "${ALL_CHARTS}" --base 0000000000000000000000000000000000000000
 check "unknown base"                  "${ALL_CHARTS}" --base deadbeefdeadbeef
-check "roots"                         "packages/services/a packages/services/b" --roots packages
+check "roots"                         "packages/services/a packages/services/b packages/services/c" --roots packages
 check "nothing changed"               "" --base "${BASE}"
 check "release paths"                 "packages/services/b" --paths '["packages/services/b"]'
 check "release path without chart"    "::error title=No chart::packages/services was released but holds no Chart.yaml" \
@@ -81,6 +84,10 @@ check "release path without chart"    "::error title=No chart::packages/services
 git checkout -q -b t1 "${BASE}"
 echo x > packages/services/b/values.yaml && git add -A && git commit -qm b
 check "one chart changed"             "packages/services/b" --base "${BASE}"
+
+git checkout -q -b t1v "${BASE}"
+echo x > packages/services/c/vendor/upstream/values.yaml && git add -A && git commit -qm c
+check "vendored chart changed: wrapper" "packages/services/c" --base "${BASE}"
 
 git checkout -q -b t2 "${BASE}"
 echo x > charts/okdp-lib/templates.tpl && git add -A && git commit -qm lib
