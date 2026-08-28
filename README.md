@@ -142,15 +142,18 @@ Notes for the chart repositories:
 
 Every OKDP chart is rendered by Helm under Flux and by `helm template` under Argo CD. The
 guard fails on what behaves differently between the two, in the chart's own `templates/`
-(template comments are ignored; vendored subcharts are not scanned):
+and in the vendored upstream charts (template comments are ignored). Each rule has an id,
+used by `okdp-guard-allow.yaml` (below):
 
-- `lookup`;
+- `lookup` (`lookup`);
 - non-deterministic functions: `rand*`, `uuidv4`, `now`, `ago`, `shuffle`, `genCA`,
-  `genPrivateKey`, `gen*Cert`, `htpasswd`, `bcrypt`, `encryptAES`;
-- `.Release.IsInstall`, `.Release.IsUpgrade`;
-- `.Capabilities` other than `.Capabilities.KubeVersion`;
+  `genPrivateKey`, `gen*Cert`, `htpasswd`, `bcrypt`, `encryptAES` (`non-deterministic`);
+- `.Release.IsInstall`, `.Release.IsUpgrade` (`release-flags`);
+- `.Capabilities` other than `.Capabilities.KubeVersion` (`capabilities`). A library chart
+  may pass the whole `.Capabilities` object on (`okdp-lib`'s `okdp.vendor.render` does);
+  any field or method access is still refused;
 - `helm.sh/hook` other than `pre-install`, `pre-upgrade`, `post-install`, `post-upgrade`
-  (a templated hook value is refused too).
+  (`hook`); a templated hook value is refused too (`templated-hook`).
 
 For application charts, it also requires:
 
@@ -165,6 +168,43 @@ through their parent chart: they need no descriptor, no `ci/*-values.yaml`, and 
 `global`/`connections`. A `values.schema.json` they ship must still be draft-07 (and free of
 `x-kubocd-*`), and the forbidden-pattern checks apply to them as to every chart. Without
 `ci/`, `okdp-chart-test.sh` renders a helper chart with its default values.
+
+### Vendored upstream charts
+
+A wrapper chart that renders upstream charts with `okdp.vendor.render` keeps them unpacked
+under `vendor/<name>/`, listed in `vendor.yaml`. The guard:
+
+- checks `vendor/` against `vendor.yaml`, offline: each listed chart is under
+  `vendor/<name>/` with the listed `Chart.yaml` name (`chart`, default `name`) and
+  `version`, nothing unlisted is under `vendor/`, and `vendor/` without `vendor.yaml` is an
+  error. (The pristine-content comparison needs a download: run
+  `platform-packages/scripts/vendor-charts.sh --check` for that.) Packed (`charts/*.tgz`)
+  and application subcharts under `vendor/<name>/charts/` are refused, as the render
+  refuses them;
+- scans `vendor/<name>/templates/` and the templates of its library subcharts
+  (`vendor/<name>/charts/*/templates/`), except `templates/tests/` and `NOTES.txt`, which
+  the render skips. A finding fails unless the chart's `okdp-guard-allow.yaml` allows it.
+
+`okdp-guard-allow.yaml`, at the chart root, is a list of exceptions:
+
+```yaml
+- file: vendor/opa-kube-mgmt/templates/servicemonitor.yaml   # shell pattern, relative to
+  pattern: capabilities                                      # the chart (* matches /)
+  reason: guarded by serviceMonitor.enabled, false upstream and never set by the wrapper
+- file: vendor/opa-kube-mgmt/templates/webhookconfiguration.yaml
+  pattern: non-deterministic
+  reason: genCA/genSignedCert are only emitted with the admission controller
+  disabledBy: admissionController.enabled=false
+```
+
+- `file` must be under `vendor/`: the chart's own templates cannot be allowed.
+- `pattern` is a rule id; `reason` is required.
+- `lookup`, `non-deterministic` and `release-flags` change what is rendered between Helm and
+  `helm template`: they are allowed only with `disabledBy`, the value of the vendored
+  chart that disables that code path (the wrapper must keep it so). The guard warns when
+  that key is not in `vendor/<name>/values.yaml`. `capabilities`, `hook` and
+  `templated-hook` need a reason only.
+- An entry that allows nothing is a warning (remove it).
 
 ## Running the checks locally
 
