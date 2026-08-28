@@ -65,8 +65,12 @@ expect() {
 expect good-service 0 ""
 expect good-library 0 ""
 
+# A library may pass the whole .Capabilities object on (okdp.vendor.render
+# does); a method call on it is still an error, and so is a pass-through in an
+# application chart.
 expect bad-library 1 "" \
-  "bad-library/templates/_helpers.tpl:2: error: lookup is forbidden"
+  "bad-library/templates/_helpers.tpl:2: error: lookup is forbidden" \
+  "bad-library/templates/_render.tpl:3: error: .Capabilities.APIVersions is forbidden"
 
 expect bad-lookup 1 "" \
   "bad-lookup/templates/secret.yaml:1: error: lookup is forbidden"
@@ -84,7 +88,8 @@ expect bad-release-flags 1 "" \
 
 expect bad-capabilities 1 "" \
   "bad-capabilities/templates/cm.yaml:1: error: .Capabilities.APIVersions is forbidden" \
-  "bad-capabilities/templates/cm.yaml:7: error: .Capabilities.HelmVersion is forbidden"
+  "bad-capabilities/templates/cm.yaml:7: error: .Capabilities.HelmVersion is forbidden" \
+  "bad-capabilities/templates/cm.yaml:10: error: .Capabilities is forbidden"
 
 expect bad-hook 1 "" \
   "bad-hook/templates/hooks.yaml:6: error: hook \"pre-delete\" is forbidden" \
@@ -122,6 +127,48 @@ expect bad-schema 1 "" \
   "bad-schema/values.schema.json: warning: title 'Storage | Hive | select' looks like the KuboCD title DSL" \
   "bad-schema: error: no ci/*-values.yaml test values file"
 
+# Vendored upstream charts (vendor/<name>/, rendered by okdp.vendor.render):
+# scanned too, templates/tests/ and NOTES.txt excepted; findings allowed by
+# okdp-guard-allow.yaml pass, an unused entry is a warning; vendor.yaml checked.
+expect vendored-good 0 "" \
+  "vendored-good/okdp-guard-allow.yaml:15: warning: unused entry: no 'hook' finding in vendor/renamed/templates/*"
+expect vendored-bad 1 "" \
+  "vendored-bad/vendor/upstream/templates/secret.yaml:1: error: lookup is forbidden" \
+  "vendored-bad/vendor/upstream/templates/secret.yaml:7: error: hook \"pre-delete\" is forbidden" \
+  "vendored-bad/vendor/upstream/templates/secret.yaml:8: error: .Release.IsInstall is forbidden" \
+  "vendored-bad/vendor/upstream/templates/secret.yaml:10: error: non-deterministic function randAlphaNum is forbidden" \
+  "vendored-bad/vendor/upstream/templates/secret.yaml:11: error: .Capabilities.APIVersions is forbidden" \
+  "add an okdp-guard-allow.yaml entry with pattern 'lookup', a reason and disabledBy" \
+  "add an okdp-guard-allow.yaml entry with pattern 'capabilities' and a reason" \
+  "vendored-bad/vendor/upstream/charts/app: error: vendored chart bundles an application subchart" \
+  "vendored-bad/vendor/upstream/charts/packed-1.0.0.tgz: error: packed subchart" \
+  "vendored-bad/vendor/upstream/Chart.yaml: error: is upstream 2.1.0, vendor.yaml lists upstream 2.0.0" \
+  "vendored-bad/vendor.yaml: error: missing 1.0.0 is listed but vendored-bad/vendor/missing/Chart.yaml is missing" \
+  "vendored-bad/vendor.yaml: error: charts[2]: name, repository and version are required" \
+  "vendored-bad/vendor.yaml: error: charts[3]: 'upstream' is listed twice" \
+  "vendored-bad/vendor/stale: error: not listed in vendor.yaml"
+# lookup/rand/IsInstall/IsUpgrade need disabledBy; the entry's other checks.
+expect vendored-bad-allow 1 "" \
+  "vendored-bad-allow/okdp-guard-allow.yaml:1: error: 'non-deterministic' cannot be allowed with a reason alone" \
+  "vendored-bad-allow/okdp-guard-allow.yaml:4: warning: disabledBy 'auth.generat' is not a key of vendor/upstream/values.yaml" \
+  "vendored-bad-allow/okdp-guard-allow.yaml:8: error: file 'templates/descriptor.yaml' is not under vendor/" \
+  "vendored-bad-allow/okdp-guard-allow.yaml:11: error: unknown key(s): owner" \
+  "vendored-bad-allow/okdp-guard-allow.yaml:11: error: pattern 'rand' is not a rule id" \
+  "vendored-bad-allow/okdp-guard-allow.yaml:11: error: reason is required" \
+  "vendored-bad-allow/okdp-guard-allow.yaml:15: error: entry must be a map" \
+  "vendored-bad-allow/vendor/upstream/templates/secret.yaml:7: error: non-deterministic function randAlphaNum is forbidden"
+RUN=$(( RUN + 1 ))
+if "${GUARD}" vendored-bad-allow 2>&1 | grep -q "secret.yaml:8: error: lookup"; then
+  echo "FAIL vendored-bad-allow: the lookup entry with disabledBy must allow the lookup"; FAILED=$(( FAILED + 1 ))
+else
+  echo "ok   vendored-bad-allow: disabledBy allows lookup"
+fi
+expect vendor-no-manifest 1 "" \
+  "vendor-no-manifest/vendor: error: vendor/ without vendor.yaml"
+expect bad-allow-file 1 "" \
+  "bad-allow-file/okdp-guard-allow.yaml: error: must be a list of {file, pattern, reason[, disabledBy]} entries" \
+  "bad-allow-file/vendor.yaml: error: must have a 'charts' list"
+
 expect missing-schema 1 "" \
   "missing-schema/values.schema.json: error: missing values.schema.json"
 
@@ -151,7 +198,7 @@ if "${GUARD}" >/dev/null 2>&1; [[ $? -eq 2 ]]; then echo "ok   usage"; else echo
 
 # Passing fixtures are real, renderable charts.
 if command -v helm >/dev/null; then
-  for chart in good-service missing-descriptor; do
+  for chart in good-service missing-descriptor vendored-good; do
     RUN=$(( RUN + 1 ))
     if helm template ci-test "${chart}" -f "${chart}/ci/default-values.yaml" >/dev/null 2>&1; then
       echo "ok   helm template ${chart}"

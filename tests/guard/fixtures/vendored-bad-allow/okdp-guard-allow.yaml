@@ -1,0 +1,15 @@
+- file: vendor/upstream/templates/secret.yaml
+  pattern: non-deterministic
+  reason: generated password
+- file: vendor/upstream/templates/secret.yaml
+  pattern: lookup
+  reason: keeps the previous password
+  disabledBy: auth.generat=false
+- file: templates/descriptor.yaml
+  pattern: capabilities
+  reason: own template
+- file: vendor/upstream/templates/secret.yaml
+  pattern: rand
+  reason: ""
+  owner: me
+- just a string

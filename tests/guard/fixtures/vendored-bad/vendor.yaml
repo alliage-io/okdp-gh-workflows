@@ -1,0 +1,12 @@
+charts:
+  - name: upstream
+    repository: https://charts.example.com
+    version: 2.0.0
+  - name: missing
+    repository: https://charts.example.com
+    version: 1.0.0
+  - name: incomplete
+    repository: https://charts.example.com
+  - name: upstream
+    repository: https://charts.example.com
+    version: 2.0.0

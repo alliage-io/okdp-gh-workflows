@@ -1,0 +1,18 @@
+# Exceptions to okdp-chart-guard.sh in the vendored upstream charts.
+- file: vendor/upstream/templates/_helpers.tpl
+  pattern: capabilities
+  reason: policy/v1 is in helm template's default API versions too
+- file: vendor/upstream/templates/servicemonitor.yaml
+  pattern: capabilities
+  reason: only with monitoring.enabled, which the wrapper never sets
+- file: vendor/upstream/templates/webhook.yaml
+  pattern: non-deterministic
+  reason: the CA is only emitted with the webhook, which the wrapper keeps disabled
+  disabledBy: webhook.enabled=false
+- file: vendor/upstream/charts/*/templates/_*.tpl
+  pattern: capabilities
+  reason: common.capabilities.ingress is never included by upstream's templates
+# Unused: a warning, not an error.
+- file: vendor/renamed/templates/*
+  pattern: hook
+  reason: stale exception

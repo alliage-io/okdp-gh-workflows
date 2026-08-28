@@ -1,0 +1,4 @@
+webhook:
+  enabled: false
+monitoring:
+  enabled: false

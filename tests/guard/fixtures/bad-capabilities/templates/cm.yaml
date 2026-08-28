@@ -7,3 +7,4 @@ data:
   helm: {{ $.Capabilities.HelmVersion.Version | quote }}
   kube: {{ .Capabilities.KubeVersion.Version | quote }}
 {{- end }}
+{{- $root := dict "Capabilities" $.Capabilities }}

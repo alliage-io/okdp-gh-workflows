@@ -1,0 +1,9 @@
+{{- $ca := genCA "upstream-ca" 3650 -}}
+{{- if .Values.webhook.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-webhook
+data:
+  ca.crt: {{ $ca.Cert | b64enc }}
+{{- end }}

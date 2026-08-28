@@ -1,0 +1,1 @@
+Installed at {{ now }}. {{ if .Release.IsInstall }}Welcome{{ end }}

@@ -1,0 +1,8 @@
+charts:
+  - name: upstream
+    repository: https://charts.example.com
+    version: 2.1.0
+  - name: renamed
+    chart: other-name
+    repository: oci://registry.example.com/charts
+    version: "0.3"
