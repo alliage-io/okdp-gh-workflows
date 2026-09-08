@@ -2,9 +2,11 @@ charts:
   - name: upstream
     repository: https://charts.example.com
     version: 2.0.0
+    drop: [app, charts/packed-1.0.0.tgz, ../outside, /abs]
   - name: missing
     repository: https://charts.example.com
     version: 1.0.0
+    remove: [charts/x]
   - name: incomplete
     repository: https://charts.example.com
   - name: upstream

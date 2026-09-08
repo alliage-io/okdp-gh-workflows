@@ -146,7 +146,13 @@ expect vendored-bad 1 "" \
   "vendored-bad/vendor.yaml: error: missing 1.0.0 is listed but vendored-bad/vendor/missing/Chart.yaml is missing" \
   "vendored-bad/vendor.yaml: error: charts[2]: name, repository and version are required" \
   "vendored-bad/vendor.yaml: error: charts[3]: 'upstream' is listed twice" \
-  "vendored-bad/vendor/stale: error: not listed in vendor.yaml"
+  "vendored-bad/vendor/stale: error: not listed in vendor.yaml" \
+  "vendored-bad/vendor/upstream/charts/app: error: vendored chart bundles an application subchart, which okdp.vendor.render refuses: drop it in vendor.yaml (drop: [charts/app])" \
+  "vendored-bad/vendor.yaml: error: charts[0]: drop 'app' matches nothing: drop paths are relative to vendor/upstream/, write charts/app" \
+  "vendored-bad/vendor/upstream/charts/packed-1.0.0.tgz: error: dropped by vendor.yaml but present" \
+  "vendored-bad/vendor.yaml: error: charts[0]: bad drop path '../outside'" \
+  "vendored-bad/vendor.yaml: error: charts[0]: bad drop path '/abs'" \
+  "vendored-bad/vendor.yaml: error: charts[1]: unknown key(s): remove"
 # lookup/rand/IsInstall/IsUpgrade need disabledBy; the entry's other checks.
 expect vendored-bad-allow 1 "" \
   "vendored-bad-allow/okdp-guard-allow.yaml:1: error: 'non-deterministic' cannot be allowed with a reason alone" \
@@ -156,12 +162,34 @@ expect vendored-bad-allow 1 "" \
   "vendored-bad-allow/okdp-guard-allow.yaml:11: error: pattern 'rand' is not a rule id" \
   "vendored-bad-allow/okdp-guard-allow.yaml:11: error: reason is required" \
   "vendored-bad-allow/okdp-guard-allow.yaml:15: error: entry must be a map" \
-  "vendored-bad-allow/vendor/upstream/templates/secret.yaml:7: error: non-deterministic function randAlphaNum is forbidden"
+  "vendored-bad-allow/vendor/upstream/templates/secret.yaml:7: error: non-deterministic function randAlphaNum is forbidden" \
+  "vendored-bad-allow/vendor.yaml: error: charts[0]: drop must be a list of paths"
 RUN=$(( RUN + 1 ))
 if "${GUARD}" vendored-bad-allow 2>&1 | grep -q "secret.yaml:8: error: lookup"; then
   echo "FAIL vendored-bad-allow: the lookup entry with disabledBy must allow the lookup"; FAILED=$(( FAILED + 1 ))
 else
   echo "ok   vendored-bad-allow: disabledBy allows lookup"
+fi
+# The Chart.lock of a vendored chart with dependencies must be committed, or
+# `vendor-charts.sh --check` fails on a fresh clone. vendored-good in a scratch
+# git repository: lock untracked, lock ignored, lock tracked.
+if command -v git >/dev/null; then
+  scratch=$(mktemp -d)
+  trap 'rm -rf "${scratch}"' EXIT
+  cp -r vendored-good "${scratch}/"
+  git -C "${scratch}" init -q
+  git -C "${scratch}" add -A
+  git -C "${scratch}" rm -q --cached vendored-good/vendor/upstream/Chart.lock
+  pushd "${scratch}" >/dev/null || exit 1
+  expect vendored-good 1 "" \
+    "vendored-good/vendor/upstream/Chart.lock: error: is not tracked by git"
+  echo "Chart.lock" > .gitignore
+  expect vendored-good 1 "" \
+    "vendored-good/vendor/upstream/Chart.lock: error: is ignored by git" \
+    "add '!**/vendor/**/Chart.lock' to .gitignore"
+  git add -f vendored-good/vendor/upstream/Chart.lock
+  expect vendored-good 0 ""
+  popd >/dev/null || exit 1
 fi
 expect vendor-no-manifest 1 "" \
   "vendor-no-manifest/vendor: error: vendor/ without vendor.yaml"

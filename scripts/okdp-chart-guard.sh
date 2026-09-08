@@ -42,7 +42,8 @@
 # (templates/tests/ and NOTES.txt excepted, the render skips them). A finding
 # there fails unless the chart's okdp-guard-allow.yaml allows it (see
 # load_allow). vendor/ must match vendor.yaml (name and version of each
-# listed chart, nothing unlisted): the offline half of
+# listed chart, `drop` paths absent, nothing unlisted, the Chart.lock of a
+# vendored chart with dependencies tracked by git): the offline half of
 # platform-packages' `scripts/vendor-charts.sh --check`.
 # Dependencies packed under charts/*.tgz are not scanned.
 #
@@ -348,7 +349,7 @@ guard_vendored() {   # guard_vendored <chart dir>
       fi
       [[ -f "$sub/Chart.yaml" ]] || continue
       if [[ "$(yq -r '.type // "application"' "$sub/Chart.yaml")" != "library" ]]; then
-        report error "$sub" "" "vendored chart bundles an application subchart, which okdp.vendor.render refuses: vendor it as a chart of its own"
+        report error "$sub" "" "vendored chart bundles an application subchart, which okdp.vendor.render refuses: drop it in vendor.yaml (drop: [charts/$(basename "$sub")]) if the wrapper never enables it, or vendor it as a chart of its own"
         continue
       fi
       scan_vendored_dir "$chart" "$sub" library
@@ -359,9 +360,11 @@ guard_vendored() {   # guard_vendored <chart dir>
 # check_vendor_manifest <chart dir>: vendor/ matches vendor.yaml, offline (the
 # semantics of platform-packages' `scripts/vendor-charts.sh --check`, minus the
 # download: each listed chart is unpacked under vendor/<name>/ with the listed
-# chart name and version, and nothing else is under vendor/).
+# chart name and version, its `drop` paths are gone, its Chart.lock is
+# committed, and nothing else is under vendor/).
 check_vendor_manifest() {
   local chart="$1" manifest="$1/vendor.yaml" count i name version repo upstream got_name got_version d n
+  local drops_tag drop extra
   local -a listed=()
   if [[ ! -f "$manifest" ]]; then
     if compgen -G "$chart/vendor/*/" >/dev/null; then
@@ -370,7 +373,7 @@ check_vendor_manifest() {
     return 0
   fi
   if [[ "$(yq -r '.charts | tag' "$manifest" 2>/dev/null)" != "!!seq" ]]; then
-    report error "$manifest" "" "must have a 'charts' list of {name, repository, version[, chart]}"
+    report error "$manifest" "" "must have a 'charts' list of {name, repository, version[, chart][, drop]}"
     return
   fi
   count=$(yq -r '.charts | length' "$manifest")
@@ -379,6 +382,12 @@ check_vendor_manifest() {
     version=$(yq -r ".charts[$i].version // \"\"" "$manifest")
     repo=$(yq -r ".charts[$i].repository // \"\"" "$manifest")
     upstream=$(yq -r ".charts[$i].chart // .charts[$i].name // \"\"" "$manifest")
+    # vendor-charts.sh ignores what it does not know: a misspelt or
+    # non-canonical key (e.g. `remove` for `drop`) would be silently ignored.
+    extra=$(yq -r ".charts[$i] | select(tag == \"!!map\") | keys | .[] | select(. != \"name\" and . != \"repository\" and . != \"version\" and . != \"chart\" and . != \"drop\")" "$manifest" | paste -sd, - | sed 's/,/, /g')
+    if [[ -n "$extra" ]]; then
+      report error "$manifest" "" "charts[$i]: unknown key(s): $extra (keys: name, repository, version, chart, drop)"
+    fi
     if [[ -z "$name" || -z "$version" || -z "$repo" ]]; then
       report error "$manifest" "" "charts[$i]: name, repository and version are required"
       continue
@@ -397,6 +406,23 @@ check_vendor_manifest() {
     if [[ "$got_name" != "$upstream" || "$got_version" != "$version" ]]; then
       report error "$chart/vendor/$name/Chart.yaml" "" "is $got_name $got_version, vendor.yaml lists $upstream $version: run scripts/vendor-charts.sh $chart"
     fi
+    # drop: paths relative to the vendored chart, removed after the pull.
+    drops_tag=$(yq -r ".charts[$i].drop | tag" "$manifest")
+    if [[ "$drops_tag" != "!!null" && "$drops_tag" != "!!seq" ]]; then
+      report error "$manifest" "" "charts[$i]: drop must be a list of paths relative to vendor/$name/ (e.g. [charts/postgresql])"
+    elif [[ "$drops_tag" == "!!seq" ]]; then
+      while IFS= read -r drop; do
+        if [[ -z "$drop" || "$drop" == /* || "$drop" == *..* ]]; then
+          report error "$manifest" "" "charts[$i]: bad drop path '$drop': a relative path inside vendor/$name/, without '..'"
+        elif [[ -e "$chart/vendor/$name/$drop" ]]; then
+          report error "$chart/vendor/$name/$drop" "" "dropped by vendor.yaml but present: run scripts/vendor-charts.sh $chart"
+        elif [[ "$drop" != */* ]] && { [[ -e "$chart/vendor/$name/charts/$drop" ]] \
+               || DROP="$drop" yq -e '.dependencies // [] | .[] | select(.name == strenv(DROP))' "$chart/vendor/$name/Chart.yaml" >/dev/null 2>&1; }; then
+          report error "$manifest" "" "charts[$i]: drop '$drop' matches nothing: drop paths are relative to vendor/$name/, write charts/$drop"
+        fi
+      done < <(yq -r ".charts[$i].drop[]" "$manifest")
+    fi
+    check_vendor_lock "$chart" "$name"
   done
   for d in "$chart"/vendor/*/; do
     [[ -d "$d" ]] || continue
@@ -405,6 +431,26 @@ check_vendor_manifest() {
       report error "$chart/vendor/$n" "" "not listed in vendor.yaml: list it or remove it"
     fi
   done
+}
+
+# check_vendor_lock <chart dir> <name>: a vendored chart with dependencies
+# ships its Chart.lock (helm pull keeps it), and a fresh clone must have it
+# too, or `vendor-charts.sh --check` fails there. A repository .gitignore
+# written for wrapper charts (Chart.lock is a helm dependency build output)
+# easily drops it: the lock must be tracked (`!**/vendor/**/Chart.lock`).
+# Skipped outside a git work tree.
+check_vendor_lock() {
+  local chart="$1" name="$2" lock="$1/vendor/$2/Chart.lock"
+  [[ "$(yq -r '.dependencies // [] | length' "$chart/vendor/$name/Chart.yaml" 2>/dev/null)" =~ ^[1-9] ]] || return 0
+  git -C "$chart" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  [[ -f "$lock" ]] || return 0   # absent on a fresh clone: --check tells whether upstream ships one
+  if [[ -z "$(git -C "$chart" ls-files -- "vendor/$name/Chart.lock")" ]]; then
+    if git -C "$chart" check-ignore -q -- "vendor/$name/Chart.lock"; then
+      report error "$lock" "" "is ignored by git, so a fresh clone lacks it and scripts/vendor-charts.sh --check fails: add '!**/vendor/**/Chart.lock' to .gitignore and commit it"
+    else
+      report error "$lock" "" "is not tracked by git, so a fresh clone lacks it and scripts/vendor-charts.sh --check fails: commit it"
+    fi
+  fi
 }
 
 guard_chart() {    # guard_chart <chart dir>

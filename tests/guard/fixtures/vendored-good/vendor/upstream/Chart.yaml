@@ -1,3 +1,11 @@
 apiVersion: v2
 name: upstream
 version: 2.1.0
+dependencies:
+  - name: common
+    repository: https://charts.example.com
+    version: 1.0.0
+  - name: database
+    repository: https://charts.example.com
+    version: 3.0.0
+    condition: database.enabled

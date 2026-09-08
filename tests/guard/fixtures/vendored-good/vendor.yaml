@@ -2,6 +2,7 @@ charts:
   - name: upstream
     repository: https://charts.example.com
     version: 2.1.0
+    drop: [charts/database]     # a bundled application subchart the wrapper never enables
   - name: renamed
     chart: other-name
     repository: oci://registry.example.com/charts

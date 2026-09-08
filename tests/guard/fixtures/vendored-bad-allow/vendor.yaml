@@ -2,3 +2,4 @@ charts:
   - name: upstream
     repository: https://charts.example.com
     version: 1.0.0
+    drop: charts/app
