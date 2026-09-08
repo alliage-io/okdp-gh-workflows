@@ -124,6 +124,14 @@ on:
         required: false
         type: string
         default: ""
+      vendor_check:
+        description: >-
+          "true": for each processed chart with a vendor.yaml, run the calling
+          repository's scripts/vendor-charts.sh --check (downloads the
+          upstream charts). Skipped with a warning when the script is absent.
+        required: false
+        type: string
+        default: "true"
       helm_version:
         description: Helm version
         required: false
@@ -279,6 +287,28 @@ jobs:
         run: |
           # shellcheck disable=SC2086 # CHARTS is a word list
           bash "${TOOLS}/scripts/okdp-chart-guard.sh" --descriptor-optional "${DESCRIPTOR_OPTIONAL}" ${CHARTS}
+
+      # The guard checks vendor/ against vendor.yaml offline (names, versions,
+      # drop, Chart.lock tracked); this compares it byte for byte with the
+      # upstream charts, so the chart repositories need no job of their own.
+      - name: Check vendored charts against upstream 🛡️
+        id: vendor
+        if: always() && env.CHARTS != '' && steps.select.outcome == 'success' && inputs.vendor_check == 'true'
+        run: |
+          set -uo pipefail
+          vendored=()
+          for chart in ${CHARTS}; do
+            [[ -f "${chart}/vendor.yaml" ]] && vendored+=("${chart}")
+          done
+          if [[ ${#vendored[@]} -eq 0 ]]; then
+            echo "No vendored chart to check."
+            exit 0
+          fi
+          if [[ ! -f scripts/vendor-charts.sh ]]; then
+            echo "::warning title=Vendored charts not checked::scripts/vendor-charts.sh not found in ${GITHUB_REPOSITORY}: ${vendored[*]} not compared with upstream"
+            exit 0
+          fi
+          bash scripts/vendor-charts.sh --check "${vendored[@]}"
 
       - name: Validate values.schema.json against the draft-07 meta-schema 🛡️
         id: schema
