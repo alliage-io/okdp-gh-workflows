@@ -30,12 +30,16 @@ sense, so the callers change little more than the `uses:` line.
 For every selected chart it runs:
 
 1. `scripts/okdp-chart-guard.sh`: the OKDP chart rules `helm lint` cannot see (below);
-2. `check-jsonschema --check-metaschema` on `values.schema.json`;
-3. `scripts/okdp-chart-test.sh`: `helm dependency build`, then `helm lint` and
+2. with `vendor_check: "true"` (default), for a chart with a `vendor.yaml`: the calling
+   repository's `scripts/vendor-charts.sh --check <chart>` (downloads the upstream charts and
+   compares them with `vendor/`; skipped with a warning when the repository has no such
+   script), so the chart repositories need no `vendor` job of their own;
+3. `check-jsonschema --check-metaschema` on `values.schema.json`;
+4. `scripts/okdp-chart-test.sh`: `helm dependency build`, then `helm lint` and
    `helm template` with each `ci/*-values.yaml` (layered over `base_values`), then
    `kubeconform` on the rendered output. A library chart is linted, and its test charts
    in `<chart>/tests/*/` are rendered and validated;
-4. when every check passed, `helm package` + `helm push`:
+5. when every check passed, `helm package` + `helm push`:
 
 | Mode | `publish_to_registry` | Charts | Pushed to | Version |
 | --- | --- | --- | --- | --- |
@@ -69,6 +73,7 @@ a `Chart.yaml` version that does not end with the release-please version of its 
 | `kubeconform_strict` | `false` | `kubeconform -strict` (reject unknown fields). |
 | `push` | `true` | `false` validates only (e.g. pull requests from forks). |
 | `sibling_repositories` | `""` | `owner/repo@ref` list cloned as `../<repo>`, for `file://` dependencies on another repository during the migration, e.g. `OKDP/platform-packages@no-kubocd`. |
+| `vendor_check` | `"true"` | `"true"`: run the repository's `scripts/vendor-charts.sh --check` on each selected chart with a `vendor.yaml` (network). Anything else skips it (the guard's offline check still runs). |
 | `helm_version` | `v3.21.4` | Helm version. |
 | `tools_repository` | `OKDP/gh-workflows` | Where the `scripts/okdp-chart-*.sh` come from. |
 | `tools_ref` | `v1` | Ref of `tools_repository` for the scripts. Keep it equal to the ref in `uses:`. |
@@ -177,10 +182,17 @@ under `vendor/<name>/`, listed in `vendor.yaml`. The guard:
 - checks `vendor/` against `vendor.yaml`, offline: each listed chart is under
   `vendor/<name>/` with the listed `Chart.yaml` name (`chart`, default `name`) and
   `version`, nothing unlisted is under `vendor/`, and `vendor/` without `vendor.yaml` is an
-  error. (The pristine-content comparison needs a download: run
-  `platform-packages/scripts/vendor-charts.sh --check` for that.) Packed (`charts/*.tgz`)
-  and application subcharts under `vendor/<name>/charts/` are refused, as the render
-  refuses them;
+  error. Entries take only `name`, `repository`, `version`, `chart` and `drop`. `drop` is a
+  list of paths relative to `vendor/<name>/` (e.g. `[charts/postgresql]`, no `..`, not
+  absolute) that must be absent; a bare subchart name (`[postgresql]`) is reported with the
+  `charts/` path to write. When `vendor/<name>/Chart.yaml` has dependencies, its
+  `Chart.lock`, if present, must be tracked by git (a `.gitignore` for wrapper charts often
+  ignores it: add `!**/vendor/**/Chart.lock`), or `vendor-charts.sh --check` fails on a
+  fresh clone. (The pristine-content comparison needs a download: the workflow's
+  `vendor_check` step runs `scripts/vendor-charts.sh --check`, canonical copy in
+  `platform-packages`.) Packed (`charts/*.tgz`) and application subcharts under
+  `vendor/<name>/charts/` are refused, as the render refuses them (`drop` the ones the
+  wrapper never enables);
 - scans `vendor/<name>/templates/` and the templates of its library subcharts
   (`vendor/<name>/charts/*/templates/`), except `templates/tests/` and `NOTES.txt`, which
   the render skips. A finding fails unless the chart's `okdp-guard-allow.yaml` allows it.
