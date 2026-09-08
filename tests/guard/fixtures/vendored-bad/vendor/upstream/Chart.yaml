@@ -1,3 +1,7 @@
 apiVersion: v2
 name: upstream
 version: 2.1.0
+dependencies:
+  - name: gone
+    repository: https://charts.example.com
+    version: 1.0.0

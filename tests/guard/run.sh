@@ -149,6 +149,7 @@ expect vendored-bad 1 "" \
   "vendored-bad/vendor/stale: error: not listed in vendor.yaml" \
   "vendored-bad/vendor/upstream/charts/app: error: vendored chart bundles an application subchart, which okdp.vendor.render refuses: drop it in vendor.yaml (drop: [charts/app])" \
   "vendored-bad/vendor.yaml: error: charts[0]: drop 'app' matches nothing: drop paths are relative to vendor/upstream/, write charts/app" \
+  "vendored-bad/vendor.yaml: error: charts[0]: drop 'gone' matches nothing: drop paths are relative to vendor/upstream/, write charts/gone" \
   "vendored-bad/vendor/upstream/charts/packed-1.0.0.tgz: error: dropped by vendor.yaml but present" \
   "vendored-bad/vendor.yaml: error: charts[0]: bad drop path '../outside'" \
   "vendored-bad/vendor.yaml: error: charts[0]: bad drop path '/abs'" \
