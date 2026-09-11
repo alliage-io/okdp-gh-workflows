@@ -22,14 +22,32 @@
 #   2. application chart: for each ci/*-values.yaml, helm lint and helm template
 #      with the base values then that file, and kubeconform on the output;
 #      library chart: helm lint, then the same as above for each test chart
-#      in <chart>/tests/*/ (a test chart without ci/ renders its defaults).
+#      in <chart>/tests/*/ (a test chart without ci/ renders its defaults);
+#   3. Helm 3 / Helm 4 compare: each of those renders again with a Helm 3
+#      binary (Argo CD renders with the Helm 3 it embeds) and a Helm 4 binary
+#      (the Flux helm-controller is built on the Helm 4 SDK), same arguments;
+#      the chart fails when the two produce different objects. Known cause:
+#      Helm 3 trims the blanks at the end of every document, Helm 4 only at
+#      the end of a template's output, so a value ending a document that
+#      another document of the same template follows (a block scalar with a
+#      trailing space, |+) differs.
 #
-# Rendered manifests are written to <out>/<chart path>/<values name>.yaml.
+# The compare parses both outputs and compares the objects, not the text. It
+# normalises only what cannot reach the cluster: comments (`# Source:`),
+# document separators, empty documents, whitespace outside values, key order
+# and quoting style (the engines apply the parsed objects), and the order of
+# the documents (Helm sorts the manifests by kind before installing them and
+# Argo CD orders them by sync wave and kind). Every value is compared as
+# parsed, trailing blanks and newlines of strings included.
+#
+# Rendered manifests are written to <out>/<chart path>/<values name>.yaml, the
+# compare renders to <out>/<chart path>/helm-compare/<values name>.helm{3,4}.yaml.
 # A failing chart does not stop the others; every failure is reported.
 #
 # Usage:
 #   okdp-chart-test.sh [--base-values "FILE..."] [--kube-version X.Y.Z]
-#                      [--out DIR] [--no-kubeconform] [--strict] <chart-dir>...
+#                      [--out DIR] [--no-kubeconform] [--strict]
+#                      [--helm3 BIN] [--helm4 BIN] [--no-helm-compare] <chart-dir>...
 #
 #   --base-values   values files layered before each ci file (e.g. a
 #                   platform-values fixture), in order
@@ -37,6 +55,10 @@
 #   --out           where rendered manifests go (default ./.okdp-rendered)
 #   --no-kubeconform  skip kubeconform (it is skipped with a warning when absent)
 #   --strict        kubeconform -strict (reject unknown fields)
+#   --helm3, --helm4  the Helm 3 and Helm 4 binaries of the compare (default:
+#                   $HELM3 / $HELM4, else helm3 / helm4 on the PATH). Each must
+#                   report its major version; a missing one is an error.
+#   --no-helm-compare  skip the Helm 3 / Helm 4 compare
 
 set -uo pipefail
 
@@ -45,6 +67,9 @@ KUBE_VERSION="1.31.0"
 OUT=".okdp-rendered"
 KUBECONFORM=true
 STRICT=false
+COMPARE=true
+HELM3="${HELM3:-helm3}"
+HELM4="${HELM4:-helm4}"
 RELEASE="ci-test"
 NAMESPACE="ci-test"
 CHARTS=()
@@ -56,18 +81,37 @@ while [[ $# -gt 0 ]]; do
     --out)            OUT="$2"; shift 2 ;;
     --no-kubeconform) KUBECONFORM=false; shift ;;
     --strict)         STRICT=true; shift ;;
+    --helm3)          HELM3="$2"; shift 2 ;;
+    --helm4)          HELM4="$2"; shift 2 ;;
+    --no-helm-compare) COMPARE=false; shift ;;
     -*) echo "unknown option: $1" >&2; exit 2 ;;
     *)  CHARTS+=("${1%/}"); shift ;;
   esac
 done
 if [[ ${#CHARTS[@]} -eq 0 ]]; then
-  echo "usage: $(basename "$0") [--base-values FILES] [--kube-version X.Y.Z] [--out DIR] [--no-kubeconform] [--strict] <chart-dir>..." >&2
+  echo "usage: $(basename "$0") [--base-values FILES] [--kube-version X.Y.Z] [--out DIR] [--no-kubeconform] [--strict] [--helm3 BIN] [--helm4 BIN] [--no-helm-compare] <chart-dir>..." >&2
   exit 2
 fi
 
 if ${KUBECONFORM} && ! command -v kubeconform >/dev/null; then
   echo "::warning title=kubeconform missing::kubeconform is not installed, rendered manifests are not validated"
   KUBECONFORM=false
+fi
+
+if ${COMPARE}; then
+  for pair in "3:${HELM3}" "4:${HELM4}"; do
+    major="${pair%%:*}"; bin="${pair#*:}"
+    if ! command -v "$bin" >/dev/null; then
+      echo "::error title=Helm ${major} missing::${bin} not found: pass --helm${major} (or set HELM${major}), or --no-helm-compare"
+      exit 2
+    fi
+    version=$("$bin" version --template '{{.Version}}' 2>/dev/null)
+    if [[ "$version" != "v${major}."* ]]; then
+      echo "::error title=Helm ${major} expected::${bin} reports '${version}', not Helm ${major}"
+      exit 2
+    fi
+    echo "Helm ${major} compare binary: ${bin} (${version})"
+  done
 fi
 
 BASE_ARGS=()
@@ -112,6 +156,37 @@ dep_build() {    # dep_build <chart>: build file:// dependencies first, then the
   fi
 }
 
+# --- Helm 3 / Helm 4 compare
+canonical() {    # canonical <manifests>: the objects, keys sorted, ordered by apiVersion/kind/namespace/name
+  yq ea -o=json -I=0 '[select(. != null)] | sort_by(.apiVersion, .kind, .metadata.namespace, .metadata.name) | .[]' "$1" \
+    | yq -p=json -o=yaml -P 'sort_keys(..)'
+}
+
+compare() {      # compare <chart> <name> <helm template args...>: render with Helm 3 and Helm 4, diff the objects
+  local chart="$1" name="$2" dir major bin
+  shift 2
+  dir="${OUT}/${chart}/helm-compare"
+  mkdir -p "$dir"
+  for major in 3 4; do
+    bin=HELM${major}
+    if ! "${!bin}" template "$RELEASE" "$chart" --namespace "$NAMESPACE" \
+         --kube-version "$KUBE_VERSION" "$@" > "${dir}/${name}.helm${major}.yaml"; then
+      fail "helm ${major} template" "${chart} (${name})"
+      return
+    fi
+    if ! canonical "${dir}/${name}.helm${major}.yaml" > "${dir}/${name}.helm${major}.objects.yaml"; then
+      fail "helm ${major} output unreadable" "${chart} (${name})"
+      return
+    fi
+  done
+  if diff -u --label "helm3 (Argo CD)" --label "helm4 (Flux)" \
+       "${dir}/${name}.helm3.objects.yaml" "${dir}/${name}.helm4.objects.yaml"; then
+    echo "same objects under Helm 3 and Helm 4"
+  else
+    fail "Helm 3 and Helm 4 render different objects" "${chart} (${name})"
+  fi
+}
+
 # --- rendering
 render() {       # render <chart> <label>: lint + template + kubeconform with each ci values file
   local chart="$1" label="$2" values name out
@@ -145,6 +220,12 @@ render() {       # render <chart> <label>: lint + template + kubeconform with ea
       continue
     fi
     endgroup
+
+    if ${COMPARE}; then
+      group "${label}: Helm 3 / Helm 4 compare (${name})"
+      compare "$chart" "$name" "${args[@]}"
+      endgroup
+    fi
 
     if ${KUBECONFORM}; then
       group "${label}: kubeconform (${name})"
