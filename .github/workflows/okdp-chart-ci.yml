@@ -133,10 +133,32 @@ on:
         type: string
         default: "true"
       helm_version:
-        description: Helm version
+        description: Helm version (dependency build, lint, template, package)
         required: false
         type: string
         default: "v3.21.4"
+      helm_compare:
+        description: >-
+          Render every ci values file with Helm 3 (helm3_version) and Helm 4
+          (helm4_version) too, and fail when the objects differ: Argo CD
+          renders with Helm 3, Flux helm-controller with Helm 4.
+        required: false
+        type: boolean
+        default: true
+      helm3_version:
+        description: >-
+          Helm 3 of the compare: the one Argo CD embeds (Argo CD 3.4:
+          hack/tool-versions.sh helm3_version=3.19.4)
+        required: false
+        type: string
+        default: "v3.19.4"
+      helm4_version:
+        description: >-
+          Helm 4 of the compare: the Helm SDK of Flux helm-controller
+          (helm-controller v1.6.4, Flux v2.9: helm.sh/helm/v4 v4.2.4)
+        required: false
+        type: string
+        default: "v4.2.4"
       tools_repository:
         description: Repository holding the okdp-chart-* scripts
         required: false
@@ -245,6 +267,26 @@ jobs:
           echo "${bin}" >> "$GITHUB_PATH"
           "${bin}/kubeconform" -v; "${bin}/oras" version | head -1; yq --version; jq --version
 
+      # Installed as helm3 / helm4 next to the helm above, checksums verified.
+      - name: Install Helm ${{ inputs.helm3_version }} and ${{ inputs.helm4_version }} for the compare 📦
+        if: inputs.helm_compare
+        env:
+          HELM3_VERSION: ${{ inputs.helm3_version }}
+          HELM4_VERSION: ${{ inputs.helm4_version }}
+        run: |
+          set -euo pipefail
+          bin="${RUNNER_TEMP}/bin"; tmp="${RUNNER_TEMP}/helm-compare"
+          mkdir -p "${tmp}"
+          for pair in "3:${HELM3_VERSION}" "4:${HELM4_VERSION}"; do
+            major="${pair%%:*}"; version="${pair#*:}"
+            tgz="helm-${version}-linux-amd64.tar.gz"
+            curl -fsSL -o "${tmp}/${tgz}" "https://get.helm.sh/${tgz}"
+            echo "$(curl -fsSL "https://get.helm.sh/${tgz}.sha256sum" | cut -d' ' -f1)  ${tmp}/${tgz}" | sha256sum -c -
+            tar -xzf "${tmp}/${tgz}" -C "${tmp}" linux-amd64/helm
+            mv "${tmp}/linux-amd64/helm" "${bin}/helm${major}"
+            "${bin}/helm${major}" version --short
+          done
+
       - name: Select the charts 🔎
         id: select
         env:
@@ -325,16 +367,22 @@ jobs:
           fi
           check-jsonschema --check-metaschema "${schemas[@]}"
 
-      - name: Build, lint, render and kubeconform 🧪
+      - name: Build, lint, render (Helm 3 / Helm 4 compare) and kubeconform 🧪
         id: test
         if: always() && env.CHARTS != '' && steps.select.outcome == 'success'
         env:
           BASE_VALUES: ${{ inputs.base_values }}
           KUBE_VERSION: ${{ inputs.kubernetes_version }}
           STRICT: ${{ inputs.kubeconform_strict }}
+          COMPARE: ${{ inputs.helm_compare }}
         run: |
           args=(--base-values "${BASE_VALUES}" --kube-version "${KUBE_VERSION}" --out "${RUNNER_TEMP}/rendered")
           [[ "${STRICT}" == "true" ]] && args+=(--strict)
+          if [[ "${COMPARE}" == "true" ]]; then
+            args+=(--helm3 "${RUNNER_TEMP}/bin/helm3" --helm4 "${RUNNER_TEMP}/bin/helm4")
+          else
+            args+=(--no-helm-compare)
+          fi
           # shellcheck disable=SC2086 # CHARTS is a word list
           bash "${TOOLS}/scripts/okdp-chart-test.sh" "${args[@]}" ${CHARTS}
 
