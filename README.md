@@ -38,7 +38,8 @@ For every selected chart it runs:
 4. `scripts/okdp-chart-test.sh`: `helm dependency build`, then `helm lint` and
    `helm template` with each `ci/*-values.yaml` (layered over `base_values`), then
    `kubeconform` on the rendered output. A library chart is linted, and its test charts
-   in `<chart>/tests/*/` are rendered and validated;
+   in `<chart>/tests/*/` are rendered and validated. Every render is also done with
+   Helm 3 and Helm 4 and must give the same objects (see "Helm 3 / Helm 4 compare");
 5. when every check passed, `helm package` + `helm push`:
 
 | Mode | `publish_to_registry` | Charts | Pushed to | Version |
@@ -74,7 +75,10 @@ a `Chart.yaml` version that does not end with the release-please version of its 
 | `push` | `true` | `false` validates only (e.g. pull requests from forks). |
 | `sibling_repositories` | `""` | `owner/repo@ref` list cloned as `../<repo>`, for `file://` dependencies on another repository during the migration, e.g. `OKDP/platform-packages@no-kubocd`. |
 | `vendor_check` | `"true"` | `"true"`: run the repository's `scripts/vendor-charts.sh --check` on each selected chart with a `vendor.yaml` (network). Anything else skips it (the guard's offline check still runs). |
-| `helm_version` | `v3.21.4` | Helm version. |
+| `helm_version` | `v3.21.4` | Helm version of dependency build, lint, template and package. |
+| `helm_compare` | `true` | Render every ci values file with Helm 3 and Helm 4 too and fail when the objects differ. |
+| `helm3_version` | `v3.19.4` | Helm 3 of the compare: the Helm Argo CD 3.4 embeds (`hack/tool-versions.sh`, `helm3_version=3.19.4`, v3.4.0 to v3.4.9). |
+| `helm4_version` | `v4.2.4` | Helm 4 of the compare: the Helm SDK of Flux helm-controller v1.6.4 (Flux v2.9, `helm.sh/helm/v4 v4.2.4` in its `go.mod`). |
 | `tools_repository` | `OKDP/gh-workflows` | Where the `scripts/okdp-chart-*.sh` come from. |
 | `tools_ref` | `v1` | Ref of `tools_repository` for the scripts. Keep it equal to the ref in `uses:`. |
 | `runs-on` | `ubuntu-latest` | Runner. |
@@ -218,10 +222,40 @@ under `vendor/<name>/`, listed in `vendor.yaml`. The guard:
   `templated-hook` need a reason only.
 - An entry that allows nothing is a warning (remove it).
 
+## Helm 3 / Helm 4 compare
+
+Argo CD renders a chart with the `helm` binary it embeds (Helm 3: v3.19.4 in Argo CD 3.4);
+Flux helm-controller renders it with the Helm 4 SDK (v4.2.4 in helm-controller v1.6.4). The
+same chart and values must give the same objects under both engines (shared contract,
+requirement 3), so `okdp-chart-test.sh` renders each ci values file again with both
+binaries (`--helm3`, `--helm4`, same arguments) and fails the chart when the objects
+differ, printing a diff (`helm3 (Argo CD)` / `helm4 (Flux)`). Raw renders go to
+`<out>/<chart>/helm-compare/<values>.helm{3,4}.yaml`, the compared objects to
+`<values>.helm{3,4}.objects.yaml`.
+
+The outputs are parsed and compared as objects, not as text. Normalised, because it
+cannot reach the cluster (both engines apply the parsed objects):
+
+- comments (`# Source: …`), document separators, empty documents;
+- whitespace outside values, key order, quoting style;
+- the order of the documents: Helm sorts the manifests by kind before installing them,
+  Argo CD orders them by sync wave and kind.
+
+Nothing else: every value is compared as parsed, trailing blanks and newlines of strings
+included. Known cause of a difference: Helm 3 trims the blanks at the end of every
+document, Helm 4 only at the end of a template's output. A value that ends a document
+followed by another document of the same template, such as a block scalar ending with a
+trailing space or a `|+` block, then differs (sandbox-dependencies dns-server, whose
+vendored ConfigMap ended with `no-hosts `: the wrapper strips trailing blanks from the
+vendored output). Fix the chart so both render the same object; `--no-helm-compare`
+(`helm_compare: false`) skips the compare.
+
 ## Running the checks locally
 
-From the chart repository root, with `helm`, `yq`, `jq`, `perl` (and optionally
-`kubeconform`):
+From the chart repository root, with `helm`, `yq`, `jq`, `perl`, a Helm 3 and a Helm 4
+binary for the compare (`helm3` / `helm4` on the `PATH`, or `$HELM3` / `$HELM4`, or
+`--helm3` / `--helm4`; see `helm3_version` / `helm4_version`), and optionally
+`kubeconform`:
 
 ```console
 GHW=../gh-workflows   # a checkout of this repository
@@ -231,4 +265,5 @@ $GHW/scripts/okdp-chart-test.sh packages/services/trino     # rendered into ./.o
 ```
 
 This repository's own tests: `tests/guard/run.sh` (guard against the fixture charts in
-`tests/guard/fixtures/`) and `tests/list/run.sh` (chart selection).
+`tests/guard/fixtures/`), `tests/list/run.sh` (chart selection) and
+`tests/compare/run.sh` (the Helm 3 / Helm 4 compare; needs `helm3` and `helm4`).
