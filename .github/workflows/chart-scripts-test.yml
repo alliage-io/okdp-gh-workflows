@@ -57,6 +57,25 @@ jobs:
         with:
           version: v3.21.4
 
+      - name: Install Helm 3 and Helm 4 for the compare tests 📦
+        env:
+          # Same defaults as okdp-chart-ci.yml helm3_version / helm4_version.
+          HELM3_VERSION: v3.19.4
+          HELM4_VERSION: v4.2.4
+        run: |
+          set -euo pipefail
+          bin="${RUNNER_TEMP}/bin"; tmp="${RUNNER_TEMP}/helm-compare"
+          mkdir -p "${bin}" "${tmp}"
+          for pair in "3:${HELM3_VERSION}" "4:${HELM4_VERSION}"; do
+            major="${pair%%:*}"; version="${pair#*:}"
+            tgz="helm-${version}-linux-amd64.tar.gz"
+            curl -fsSL -o "${tmp}/${tgz}" "https://get.helm.sh/${tgz}"
+            echo "$(curl -fsSL "https://get.helm.sh/${tgz}.sha256sum" | cut -d' ' -f1)  ${tmp}/${tgz}" | sha256sum -c -
+            tar -xzf "${tmp}/${tgz}" -C "${tmp}" linux-amd64/helm
+            mv "${tmp}/linux-amd64/helm" "${bin}/helm${major}"
+          done
+          echo "${bin}" >> "$GITHUB_PATH"
+
       - name: shellcheck
         run: shellcheck scripts/*.sh tests/*/run.sh
 
@@ -65,3 +84,6 @@ jobs:
 
       - name: okdp-chart-list.sh tests
         run: tests/list/run.sh
+
+      - name: okdp-chart-test.sh Helm 3 / Helm 4 compare tests
+        run: tests/compare/run.sh
