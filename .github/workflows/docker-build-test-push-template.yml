@@ -32,7 +32,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 defaults:
   run:
@@ -41,6 +40,9 @@ defaults:
 jobs:
   docker-build-test-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push the CI image to ghcr.io with GITHUB_TOKEN
 
     steps:
       - name: Checkout Repo ⚡️

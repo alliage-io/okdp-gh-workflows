@@ -18,6 +18,10 @@ name: Conventional Commits
 
 on:
   workflow_call:
+
+permissions:
+  contents: read
+
 jobs:
   check-conventional-commits:
     runs-on: ubuntu-latest
