@@ -42,9 +42,9 @@
 # (templates/tests/ and NOTES.txt excepted, the render skips them). A finding
 # there fails unless the chart's okdp-guard-allow.yaml allows it (see
 # load_allow). vendor/ must match vendor.yaml (name and version of each
-# listed chart, `drop` paths absent, nothing unlisted, the Chart.lock of a
-# vendored chart with dependencies tracked by git): the offline half of
-# platform-packages' `scripts/vendor-charts.sh --check`.
+# listed chart, `drop` paths absent, nothing unlisted) and must not be tracked
+# by git: it is downloaded by the repository's `scripts/vendor-charts.sh`,
+# which the workflow runs before this guard.
 # Dependencies packed under charts/*.tgz are not scanned.
 #
 # Usage:
@@ -360,8 +360,8 @@ guard_vendored() {   # guard_vendored <chart dir>
 # check_vendor_manifest <chart dir>: vendor/ matches vendor.yaml, offline (the
 # semantics of platform-packages' `scripts/vendor-charts.sh --check`, minus the
 # download: each listed chart is unpacked under vendor/<name>/ with the listed
-# chart name and version, its `drop` paths are gone, its Chart.lock is
-# committed, and nothing else is under vendor/).
+# chart name and version, its `drop` paths are gone, and nothing else is under
+# vendor/), and vendor/ is not tracked by git.
 check_vendor_manifest() {
   local chart="$1" manifest="$1/vendor.yaml" count i name version repo upstream got_name got_version d n
   local drops_tag drop extra
@@ -422,8 +422,8 @@ check_vendor_manifest() {
         fi
       done < <(yq -r ".charts[$i].drop[]" "$manifest")
     fi
-    check_vendor_lock "$chart" "$name"
   done
+  check_vendor_untracked "$chart"
   for d in "$chart"/vendor/*/; do
     [[ -d "$d" ]] || continue
     n=$(basename "$d")
@@ -433,23 +433,14 @@ check_vendor_manifest() {
   done
 }
 
-# check_vendor_lock <chart dir> <name>: a vendored chart with dependencies
-# ships its Chart.lock (helm pull keeps it), and a fresh clone must have it
-# too, or `vendor-charts.sh --check` fails there. A repository .gitignore
-# written for wrapper charts (Chart.lock is a helm dependency build output)
-# easily drops it: the lock must be tracked (`!**/vendor/**/Chart.lock`).
-# Skipped outside a git work tree.
-check_vendor_lock() {
-  local chart="$1" name="$2" lock="$1/vendor/$2/Chart.lock"
-  [[ "$(yq -r '.dependencies // [] | length' "$chart/vendor/$name/Chart.yaml" 2>/dev/null)" =~ ^[1-9] ]] || return 0
+# check_vendor_untracked <chart dir>: vendor/ is a download of vendor.yaml
+# (scripts/vendor-charts.sh), not a copy kept in git. Skipped outside a git
+# work tree.
+check_vendor_untracked() {
+  local chart="$1"
   git -C "$chart" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  [[ -f "$lock" ]] || return 0   # absent on a fresh clone: --check tells whether upstream ships one
-  if [[ -z "$(git -C "$chart" ls-files -- "vendor/$name/Chart.lock")" ]]; then
-    if git -C "$chart" check-ignore -q -- "vendor/$name/Chart.lock"; then
-      report error "$lock" "" "is ignored by git, so a fresh clone lacks it and scripts/vendor-charts.sh --check fails: add '!**/vendor/**/Chart.lock' to .gitignore and commit it"
-    else
-      report error "$lock" "" "is not tracked by git, so a fresh clone lacks it and scripts/vendor-charts.sh --check fails: commit it"
-    fi
+  if [[ -n "$(git -C "$chart" ls-files -- vendor | head -n 1)" ]]; then
+    report error "$chart/vendor" "" "is tracked by git: vendor/ is downloaded from vendor.yaml by scripts/vendor-charts.sh, not committed: git rm -r --cached $chart/vendor and add it to .gitignore"
   fi
 }
 

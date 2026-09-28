@@ -124,14 +124,6 @@ on:
         required: false
         type: string
         default: ""
-      vendor_check:
-        description: >-
-          "true": for each processed chart with a vendor.yaml, run the calling
-          repository's scripts/vendor-charts.sh --check (downloads the
-          upstream charts). Skipped with a warning when the script is absent.
-        required: false
-        type: string
-        default: "true"
       helm_version:
         description: Helm version (dependency build, lint, template, package)
         required: false
@@ -321,6 +313,72 @@ jobs:
         if: env.CHARTS == ''
         run: echo "No chart changed. Nothing to do."
 
+      # vendor/ is not committed: vendor.yaml pins the upstream charts, and
+      # the repository's scripts/vendor-charts.sh downloads them before the
+      # guard (which scans their templates), the tests and helm package (the
+      # published chart carries them, so it installs offline).
+      - name: Download the vendored upstream charts 📥
+        id: vendor
+        if: env.CHARTS != ''
+        run: |
+          set -euo pipefail
+          vendored=()
+          for chart in ${CHARTS}; do
+            [[ -f "${chart}/vendor.yaml" ]] && vendored+=("${chart}")
+          done
+          if [[ ${#vendored[@]} -eq 0 ]]; then
+            echo "No vendored chart."
+            exit 0
+          fi
+          if [[ ! -f scripts/vendor-charts.sh ]]; then
+            echo "::error title=Cannot vendor::scripts/vendor-charts.sh not found in ${GITHUB_REPOSITORY}: ${vendored[*]} cannot be rendered"
+            exit 1
+          fi
+          bash scripts/vendor-charts.sh "${vendored[@]}"
+
+      # vendor/ is not in git, so an upgrade (vendor.yaml changed) shows no
+      # template diff in the pull request: print it here for the review.
+      - name: Show the upstream changes of the vendored charts 🔎
+        if: env.CHARTS != '' && steps.vendor.outcome == 'success' && inputs.publish_to_registry != 'true'
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+          base="${PR_BASE:-${PUSH_BEFORE:-}}"
+          if [[ -z "${base}" || "${base}" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No base commit to compare with."
+            exit 0
+          fi
+          old="${RUNNER_TEMP}/vendor-base"
+          git worktree add -q --detach "${old}" "${base}"
+          changed=0
+          for chart in ${CHARTS}; do
+            [[ -f "${chart}/vendor.yaml" ]] || continue
+            git diff --quiet "${base}" HEAD -- "${chart}/vendor.yaml" && continue
+            changed=1
+            rm -rf "${old:?}/${chart}/vendor"
+            if [[ -f "${old}/${chart}/vendor.yaml" ]]; then
+              bash scripts/vendor-charts.sh "${old}/${chart}" >/dev/null \
+                || echo "::warning title=Base not vendored::${chart}: cannot download the vendored charts of ${base}"
+            fi
+            mkdir -p "${old}/${chart}/vendor"
+            echo "::group::${chart}: vendor/ ${base::7} -> ${GITHUB_SHA::7}"
+            diff -ruN "${old}/${chart}/vendor" "${chart}/vendor" | sed "s|${old}/||"
+            echo "::endgroup::"
+            {
+              echo "### \`${chart}\`: vendored upstream changes"
+              echo ""
+              echo '```'
+              git -C "${old}" show "${base}:${chart}/vendor.yaml" 2>/dev/null | diff -u - "${chart}/vendor.yaml" | tail -n +3
+              echo '```'
+              echo ""
+              echo "Files: $(diff -rq "${old}/${chart}/vendor" "${chart}/vendor" | wc -l) changed (full diff in the job log)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+          git worktree remove --force "${old}"
+          [[ ${changed} -eq 1 ]] || echo "No vendor.yaml changed."
+
       - name: Guard the OKDP chart rules 🛡️
         id: guard
         if: env.CHARTS != ''
@@ -329,28 +387,6 @@ jobs:
         run: |
           # shellcheck disable=SC2086 # CHARTS is a word list
           bash "${TOOLS}/scripts/okdp-chart-guard.sh" --descriptor-optional "${DESCRIPTOR_OPTIONAL}" ${CHARTS}
-
-      # The guard checks vendor/ against vendor.yaml offline (names, versions,
-      # drop, Chart.lock tracked); this compares it byte for byte with the
-      # upstream charts, so the chart repositories need no job of their own.
-      - name: Check vendored charts against upstream 🛡️
-        id: vendor
-        if: always() && env.CHARTS != '' && steps.select.outcome == 'success' && inputs.vendor_check == 'true'
-        run: |
-          set -uo pipefail
-          vendored=()
-          for chart in ${CHARTS}; do
-            [[ -f "${chart}/vendor.yaml" ]] && vendored+=("${chart}")
-          done
-          if [[ ${#vendored[@]} -eq 0 ]]; then
-            echo "No vendored chart to check."
-            exit 0
-          fi
-          if [[ ! -f scripts/vendor-charts.sh ]]; then
-            echo "::warning title=Vendored charts not checked::scripts/vendor-charts.sh not found in ${GITHUB_REPOSITORY}: ${vendored[*]} not compared with upstream"
-            exit 0
-          fi
-          bash scripts/vendor-charts.sh --check "${vendored[@]}"
 
       - name: Validate values.schema.json against the draft-07 meta-schema 🛡️
         id: schema
@@ -369,7 +405,7 @@ jobs:
 
       - name: Build, lint, render (Helm 3 / Helm 4 compare) and kubeconform 🧪
         id: test
-        if: always() && env.CHARTS != '' && steps.select.outcome == 'success'
+        if: always() && env.CHARTS != '' && steps.select.outcome == 'success' && steps.vendor.outcome == 'success'
         env:
           BASE_VALUES: ${{ inputs.base_values }}
           KUBE_VERSION: ${{ inputs.kubernetes_version }}

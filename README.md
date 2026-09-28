@@ -29,11 +29,12 @@ sense, so the callers change little more than the `uses:` line.
 
 For every selected chart it runs:
 
-1. `scripts/okdp-chart-guard.sh`: the OKDP chart rules `helm lint` cannot see (below);
-2. with `vendor_check: "true"` (default), for a chart with a `vendor.yaml`: the calling
-   repository's `scripts/vendor-charts.sh --check <chart>` (downloads the upstream charts and
-   compares them with `vendor/`; skipped with a warning when the repository has no such
-   script), so the chart repositories need no `vendor` job of their own;
+1. for a chart with a `vendor.yaml`: the calling repository's
+   `scripts/vendor-charts.sh <chart>`, which downloads the pinned upstream charts under
+   `vendor/` (not committed), so the steps below and `helm package` see them. On a push or a
+   pull request that changes a `vendor.yaml`, the diff of `vendor/` against the base commit
+   is printed in the job log (and summarised in the job summary) for the review;
+2. `scripts/okdp-chart-guard.sh`: the OKDP chart rules `helm lint` cannot see (below);
 3. `check-jsonschema --check-metaschema` on `values.schema.json`;
 4. `scripts/okdp-chart-test.sh`: `helm dependency build`, then `helm lint` and
    `helm template` with each `ci/*-values.yaml` (layered over `base_values`), then
@@ -74,7 +75,6 @@ a `Chart.yaml` version that does not end with the release-please version of its 
 | `kubeconform_strict` | `false` | `kubeconform -strict` (reject unknown fields). |
 | `push` | `true` | `false` validates only (e.g. pull requests from forks). |
 | `sibling_repositories` | `""` | `owner/repo@ref` list cloned as `../<repo>`, for `file://` dependencies on another repository during the migration, e.g. `OKDP/platform-packages@no-kubocd`. |
-| `vendor_check` | `"true"` | `"true"`: run the repository's `scripts/vendor-charts.sh --check` on each selected chart with a `vendor.yaml` (network). Anything else skips it (the guard's offline check still runs). |
 | `helm_version` | `v3.21.4` | Helm version of dependency build, lint, template and package. |
 | `helm_compare` | `true` | Render every ci values file with Helm 3 and Helm 4 too and fail when the objects differ. |
 | `helm3_version` | `v3.19.4` | Helm 3 of the compare: the Helm Argo CD 3.4 embeds (`hack/tool-versions.sh`, `helm3_version=3.19.4`, v3.4.0 to v3.4.9). |
@@ -180,8 +180,9 @@ through their parent chart: they need no descriptor, no `ci/*-values.yaml`, and 
 
 ### Vendored upstream charts
 
-A wrapper chart that renders upstream charts with `okdp.vendor.render` keeps them unpacked
-under `vendor/<name>/`, listed in `vendor.yaml`. The guard:
+A wrapper chart that renders upstream charts with `okdp.vendor.render` lists them in
+`vendor.yaml`; `scripts/vendor-charts.sh` downloads them unpacked under `vendor/<name>/`,
+which is not committed (the workflow downloads them before the guard). The guard:
 
 - checks `vendor/` against `vendor.yaml`, offline: each listed chart is under
   `vendor/<name>/` with the listed `Chart.yaml` name (`chart`, default `name`) and
@@ -189,12 +190,9 @@ under `vendor/<name>/`, listed in `vendor.yaml`. The guard:
   error. Entries take only `name`, `repository`, `version`, `chart` and `drop`. `drop` is a
   list of paths relative to `vendor/<name>/` (e.g. `[charts/postgresql]`, no `..`, not
   absolute) that must be absent; a bare subchart name (`[postgresql]`) is reported with the
-  `charts/` path to write. When `vendor/<name>/Chart.yaml` has dependencies, its
-  `Chart.lock`, if present, must be tracked by git (a `.gitignore` for wrapper charts often
-  ignores it: add `!**/vendor/**/Chart.lock`), or `vendor-charts.sh --check` fails on a
-  fresh clone. (The pristine-content comparison needs a download: the workflow's
-  `vendor_check` step runs `scripts/vendor-charts.sh --check`, canonical copy in
-  `platform-packages`.) Packed (`charts/*.tgz`) and application subcharts under
+  `charts/` path to write. `vendor/` must not be tracked by git (in a git work tree).
+  (`scripts/vendor-charts.sh`, canonical copy in `platform-packages`, is what the workflow
+  runs to download it.) Packed (`charts/*.tgz`) and application subcharts under
   `vendor/<name>/charts/` are refused, as the render refuses them (`drop` the ones the
   wrapper never enables);
 - scans `vendor/<name>/templates/` and the templates of its library subcharts

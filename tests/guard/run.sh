@@ -27,7 +27,12 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GUARD="${HERE}/../../scripts/okdp-chart-guard.sh"
-cd "${HERE}/fixtures" || exit 1
+# The fixtures' vendor/ directories are tracked by this repository, which the
+# guard refuses in a chart repository: run on a copy outside any git work tree.
+work=$(mktemp -d)
+trap 'rm -rf "${work}"' EXIT
+cp -r "${HERE}/fixtures" "${work}/"
+cd "${work}/fixtures" || exit 1
 
 # The guard must print local-format findings here, even when this runs in CI.
 unset GITHUB_ACTIONS
@@ -171,24 +176,19 @@ if "${GUARD}" vendored-bad-allow 2>&1 | grep -q "secret.yaml:8: error: lookup"; 
 else
   echo "ok   vendored-bad-allow: disabledBy allows lookup"
 fi
-# The Chart.lock of a vendored chart with dependencies must be committed, or
-# `vendor-charts.sh --check` fails on a fresh clone. vendored-good in a scratch
-# git repository: lock untracked, lock ignored, lock tracked.
+# vendor/ is downloaded by scripts/vendor-charts.sh, never committed.
+# vendored-good in a scratch git repository: vendor/ tracked, then untracked.
 if command -v git >/dev/null; then
-  scratch=$(mktemp -d)
-  trap 'rm -rf "${scratch}"' EXIT
+  scratch="${work}/git"
+  mkdir -p "${scratch}"
   cp -r vendored-good "${scratch}/"
   git -C "${scratch}" init -q
   git -C "${scratch}" add -A
-  git -C "${scratch}" rm -q --cached vendored-good/vendor/upstream/Chart.lock
   pushd "${scratch}" >/dev/null || exit 1
   expect vendored-good 1 "" \
-    "vendored-good/vendor/upstream/Chart.lock: error: is not tracked by git"
-  echo "Chart.lock" > .gitignore
-  expect vendored-good 1 "" \
-    "vendored-good/vendor/upstream/Chart.lock: error: is ignored by git" \
-    "add '!**/vendor/**/Chart.lock' to .gitignore"
-  git add -f vendored-good/vendor/upstream/Chart.lock
+    "vendored-good/vendor: error: is tracked by git" \
+    "git rm -r --cached vendored-good/vendor"
+  git rm -r -q --cached vendored-good/vendor
   expect vendored-good 0 ""
   popd >/dev/null || exit 1
 fi
