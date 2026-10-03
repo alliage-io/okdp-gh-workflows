@@ -49,9 +49,9 @@ For every selected chart it runs:
 | Release | `"true"` | `package_paths`, or every chart when empty | `oci://<registry>/<owner>/<oci_package_prefix>` | `Chart.yaml` `version` |
 
 A chart is *changed* when a file under it changed, or under one of its `file://`
-dependencies (so changing `charts/okdp-lib` re-tests every chart that embeds it). A change
-under `.github/workflows/` or `.github/actions/`, a new branch, or `workflow_dispatch`
-selects every chart.
+dependencies (so changing a library chart of the repository re-tests every chart that
+embeds it). A change under `.github/workflows/` or `.github/actions/`, a new branch, or
+`workflow_dispatch` selects every chart.
 
 On release, a version already on the registry is never overwritten (`on_existing_tag`), and
 a `Chart.yaml` version that does not end with the release-please version of its path in
@@ -142,7 +142,7 @@ Notes for the chart repositories:
   `compose-oci-tag.sh` must now rewrite `version:` in `<path>/Chart.yaml` (instead of
   `tag:` in the KuboCD manifest). The release job refuses a `Chart.yaml` whose version does
   not end with `-<manifest version>`.
-- **Charts outside release-please.** A chart under `charts/` (e.g. `okdp-lib`) is released
+- **Charts outside release-please.** A chart under `charts/` (e.g. a library chart) is released
   only if it has its own entry in `release-please-config.json`. Its consumers are
   re-tested by CI when it changes, but not re-released: keep the `shared-chart-consumers`
   check, or bump the consumers.
@@ -159,7 +159,7 @@ used by `okdp-guard-allow.yaml` (below):
   `genPrivateKey`, `gen*Cert`, `htpasswd`, `bcrypt`, `encryptAES` (`non-deterministic`);
 - `.Release.IsInstall`, `.Release.IsUpgrade` (`release-flags`);
 - `.Capabilities` other than `.Capabilities.KubeVersion` (`capabilities`). A library chart
-  may pass the whole `.Capabilities` object on (`okdp-lib`'s `okdp.vendor.render` does);
+  may pass the whole `.Capabilities` object on (`okdp-lib-chart`'s `okdp.vendor.render` does);
   any field or method access is still refused;
 - `helm.sh/hook` other than `pre-install`, `pre-upgrade`, `post-install`, `post-upgrade`
   (`hook`); a templated hook value is refused too (`templated-hook`).

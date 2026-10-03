@@ -1,4 +1,4 @@
-{{- /* Stand-in for okdp-lib's okdp.descriptor, so the fixture renders on its own. */ -}}
+{{- /* Stand-in for okdp-lib-chart's okdp.descriptor, so the fixture renders on its own. */ -}}
 {{- define "okdp.descriptor" -}}
 apiVersion: v1
 kind: ConfigMap
